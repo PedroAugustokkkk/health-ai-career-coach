@@ -4,6 +4,8 @@
 import streamlit as st
 import os
 from dotenv import load_dotenv
+import langchain
+
 
 # Importações específicas do Google Generative AI
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
@@ -12,7 +14,9 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGener
 from langchain_core.prompts import ChatPromptTemplate # <- MUDANÇA AQUI
 
 # Componentes LangChain (Para Chains)
-from langchain.chains import create_retrieval_chain, create_stuff_documents_chain
+# ISSO ESTÁ CERTO (COLA ISSO):
+from langchain import create_stuff_documents_chain
+from langchain import create_retrieval_chain
 
 # Componentes LangChain Community (I/O e Armazenamento)
 from langchain_community.vectorstores import FAISS

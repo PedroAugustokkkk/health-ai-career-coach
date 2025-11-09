@@ -1,149 +1,124 @@
-# -*- coding: utf-8 -*-
-
-# --- 1. Importações ---
-import streamlit as st
+# --- Imports ---
+import streamlit as st # Biblioteca do Streamlit
 import os
 from dotenv import load_dotenv
-import langchain
 
-
-# Importações específicas do Google Generative AI
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-
-# Componentes LangChain Core (Para Prompts)
-from langchain_core.prompts import ChatPromptTemplate # <- MUDANÇA AQUI
-
-# Componentes LangChain (Para Chains)
-# ISSO ESTÁ CERTO (COLA ISSO):
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-from langchain_classic.chains.retrieval import create_retrieval_chain
-
-# Componentes LangChain Community (I/O e Armazenamento)
+# LLM (Gemini)
+from langchain_google_genai import ChatGoogleGenerativeAI
+# Embeddings (Local/Gratuita)
+from langchain_community.embeddings import HuggingFaceEmbeddings
+# Vector Store (Local/Gratuita)
 from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
+# Cadeias (Chains)
+from langchain_classic.chains import create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
 
-# Componentes de processamento de texto (Pacote separado)
-from langchain_text_splitters import RecursiveCharacterTextSplitter # <- MUDANÇA AQUI
-
-# --- 2. Configuração e Variáveis de Ambiente ---
+# Carrega as variáveis de ambiente (sua GOOGLE_API_KEY)
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+google_api_key = os.getenv("GOOGLE_API_KEY")
 
-# --- 3. Carregamento e Indexação de Documentos ---
+# --- Constantes ---
+# O NOME DA PASTA QUE VOCÊ FEZ UPLOAD PARA O GITHUB
+FAISS_INDEX_PATH = "faiss_index_projeto" 
 
-@st.cache_resource 
-def load_and_index_documents():
-    """
-    Carrega documentos .txt, os divide em chunks, gera embeddings (usando Google)
-    e cria um VectorStore FAISS em memória.
-    """
-    try:
-        loader = DirectoryLoader(
-            "./data",
-            glob="**/*.txt",
-            loader_cls=TextLoader,
-            loader_kwargs={"encoding": "utf-8"}
-        )
-        documents = loader.load()
+# --- Funções Cacheadas (A Mágica do Streamlit) ---
 
-        if not documents:
-            st.error("Diretório 'data' não encontrado ou vazio. Nenhum documento .txt foi carregado.")
-            return None
-
-        # O TextSplitter agora vem do 'langchain_text_splitters'
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        chunks = text_splitter.split_documents(documents)
-
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
-            google_api_key=GOOGLE_API_KEY
-        )
-
-        vector_store = FAISS.from_documents(chunks, embeddings)
-        return vector_store.as_retriever(search_kwargs={"k": 3})
-
-    except Exception as e:
-        st.error(f"Erro durante a indexação (verifique sua GOOGLE_API_KEY): {e}")
-        return None
-
-# --- 4. Configuração da Chain de RAG (Retrieval-Augmented Generation) ---
-
-def setup_rag_chain(retriever):
-    """
-    Configura a chain de RAG com o LLM do Google (Gemini).
-    """
-    
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-1.5-pro-latest",
-        google_api_key=GOOGLE_API_KEY,
-        temperature=0.3
+# O @st.cache_resource "guarda" o modelo na memória do Streamlit.
+# Isso garante que só vamos baixar/carregar o modelo UMA VEZ.
+@st.cache_resource
+def get_embeddings_model():
+    print("Carregando modelo de embedding (HuggingFace)...")
+    model_name = "sentence-transformers/all-MiniLM-L6-v2"
+    model_kwargs = {'device': 'cpu'}
+    embeddings = HuggingFaceEmbeddings(
+        model_name=model_name,
+        model_kwargs=model_kwargs
     )
+    print("Modelo de embedding carregado.")
+    return embeddings
 
-    # O ChatPromptTemplate agora vem do 'langchain_core.prompts'
+# Cacheia o carregamento do LLM
+@st.cache_resource
+def get_llm():
+    print("Carregando LLM (Gemini)...")
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-pro", 
+        google_api_key=google_api_key,
+        convert_system_message_to_human=True
+    )
+    print("LLM carregado.")
+    return llm
+
+# Cacheia o carregamento do índice FAISS (que está no GitHub)
+@st.cache_resource
+def load_faiss_index(embeddings_model):
+    print("Carregando índice FAISS local...")
+    # Carrega o índice da pasta (que você upou pro GitHub)
+    db = FAISS.load_local(
+        FAISS_INDEX_PATH, 
+        embeddings_model, 
+        allow_dangerous_deserialization=True # Necessário para carregar do disco
+    )
+    print("Índice FAISS carregado.")
+    return db
+
+# Cacheia a criação da cadeia RAG
+@st.cache_resource
+def get_rag_chain(_llm, _retriever):
+    print("Criando a cadeia RAG...")
+    # Template do Prompt
     prompt_template = """
-    Você é o "Sanar AI Career Coach", um assistente especialista focado em carreira médica,
-    baseado exclusivamente nos dados da Sanar.
-    
-    Responda à pergunta do usuário utilizando *apenas* o contexto fornecido abaixo.
-    Se a resposta não estiver contida no contexto, informe:
-    "Desculpe, eu não tenho informações sobre isso nos artigos da Sanar que consultei."
-
-    Contexto:
-    {context}
-
-    Pergunta:
-    {input}
-
+    Você é um assistente especialista. Responda a pergunta *apenas* com base no contexto.
+    Contexto: {context}
+    Pergunta: {input}
     Resposta:
     """
     prompt = ChatPromptTemplate.from_template(prompt_template)
-
-    document_chain = create_stuff_documents_chain(llm, prompt)
-    retrieval_chain = create_retrieval_chain(retriever, document_chain)
-
+    
+    # Cria as duas cadeias
+    document_chain = create_stuff_documents_chain(_llm, prompt)
+    retrieval_chain = create_retrieval_chain(_retriever, document_chain)
+    print("Cadeia RAG pronta.")
     return retrieval_chain
 
-# --- 5. Interface Streamlit (UI) ---
+# --- Interface do Streamlit ---
 
-def main():
-    st.set_page_config(page_title="Sanar AI Career Coach (Gemini)", page_icon="🩺")
-    st.title("🩺 Sanar AI Career Coach")
-    st.write("Assistente de carreira médica (Powered by Google Gemini)")
+st.set_page_config(page_title="Chat com Documentos", layout="wide")
+st.title("📄 Chatbot com Documentos (Usando Gemini)")
 
+# Garante que a API Key foi configurada
+if not google_api_key:
+    st.error("GOOGLE_API_KEY não encontrada! Configure-a nos 'Secrets' do Streamlit.")
+else:
     try:
-        retriever = load_and_index_documents()
+        # --- Carregamento dos Modelos (via cache) ---
+        embeddings = get_embeddings_model()
+        llm = get_llm()
+        
+        # Carrega o índice FAISS e o transforma em um "buscador"
+        db = load_faiss_index(embeddings)
+        retriever = db.as_retriever(search_kwargs={"k": 4})
+        
+        # Carrega a cadeia RAG
+        chain = get_rag_chain(llm, retriever)
 
-        if retriever:
-            rag_chain = setup_rag_chain(retriever)
+        # --- Interface de Chat ---
+        st.write("O índice está carregado. Faça sua pergunta sobre o documento.")
+        
+        # Input do usuário
+        user_question = st.text_input("Sua pergunta:")
 
-            if "messages" not in st.session_state:
-                st.session_state.messages = []
-
-            for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
-
-            if user_query := st.chat_input("Qual sua dúvida sobre residência?"):
-                st.session_state.messages.append({"role": "user", "content": user_query})
-                with st.chat_message("user"):
-                    st.markdown(user_query)
-
-                with st.spinner("Analisando artigos da Sanar (via Gemini)..."):
-                    response = rag_chain.invoke({"input": user_query})
-                    ai_response = response["answer"]
-
-                st.session_state.messages.append({"role": "assistant", "content": ai_response})
-                with st.chat_message("assistant"):
-                    st.markdown(ai_response)
+        if user_question:
+            # Mostra um "spinner" enquanto pensa
+            with st.spinner("Pensando... (Consultando o Gemini e o índice)"):
+                # Invoca a cadeia
+                response = chain.invoke({"input": user_question})
+                
+                # Mostra a resposta
+                st.subheader("Resposta:")
+                st.write(response["answer"])
 
     except Exception as e:
-        st.error(f"Ocorreu um erro crítico na aplicação: {e}")
-        st.info("Verifique se a GOOGLE_API_KEY está correta no .env e reinicie.")
-
-# --- Ponto de Entrada ---
-if __name__ == "__main__":
-    if not GOOGLE_API_KEY:
-        st.error("Chave GOOGLE_API_KEY não encontrada.")
-        st.info("Por favor, configure sua chave no arquivo .env e reinicie a aplicação.")
-    else:
-        main()
+        st.error(f"Ocorreu um erro ao carregar os componentes: {e}")
+        st.error("Verifique se a pasta 'faiss_index_projeto' existe no seu repositório.")

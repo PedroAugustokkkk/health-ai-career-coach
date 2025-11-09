@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_classic.chains import create_retrieval_chain
+from langchain_classic.chains.retrieval import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -29,7 +29,7 @@ def get_embeddings_model():
 def get_llm():
     print("Carregando LLM (Gemini)...")
     llm = ChatGoogleGenerativeAI(
-        model="gemini-pro", 
+        model="gemini-2.5-flash", 
         google_api_key=google_api_key,
         convert_system_message_to_human=True
     )
